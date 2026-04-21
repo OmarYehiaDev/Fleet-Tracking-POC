@@ -89,4 +89,18 @@ class VehicleModel {
       snapshots: snapshots,
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      other is VehicleModel &&
+      other.vehicleId == vehicleId &&
+      other.status == status &&
+      other.lastSeen == lastSeen &&
+      other.currentLatitude == currentLatitude &&
+      other.currentLongitude == currentLongitude &&
+      other.snapshots.length == snapshots.length;
+
+  @override
+  int get hashCode =>
+      Object.hash(vehicleId, status, lastSeen, currentLatitude, currentLongitude, snapshots.length);
 }

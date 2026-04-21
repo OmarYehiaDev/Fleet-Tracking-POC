@@ -23,15 +23,17 @@ class FleetManagementService {
   /// Call once on app init. Automatically marks the vehicle as
   /// 'offline' if the connection drops unexpectedly.
   Future<void> registerPresence(String vehicleId) async {
-    await _vehiclesRef.child(vehicleId).update({'status': 'active'});
-    await _vehiclesRef.child(vehicleId).onDisconnect().update({'status': 'offline'});
+    await _vehiclesRef.child(vehicleId).update({'status': VehicleStatus.online.name});
+    await _vehiclesRef.child(vehicleId).onDisconnect().update({
+      'status': VehicleStatus.offline.name,
+    });
   }
 
   ///* GO OFFLINE
   ///
   /// Manually marks the vehicle as offline (e.g. on user logout).
   Future<void> goOffline(String vehicleId) async {
-    await _vehiclesRef.child(vehicleId).update({'status': 'offline'});
+    await _vehiclesRef.child(vehicleId).update({'status': VehicleStatus.offline.name});
   }
 
   ///* STREAM VEHICLE'S LOCATION
@@ -42,14 +44,14 @@ class FleetManagementService {
     return Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10, // fires every 10 meters moved
+        distanceFilter: 5, // fires every 5 meters moved
       ),
     ).listen((position) {
-      _updateStatus(vehicleId, position.latitude, position.longitude);
+      updateVehicleStatus(vehicleId, position.latitude, position.longitude);
     });
   }
 
-  Future<void> _updateStatus(String vehicleId, double lat, double lng) async {
+  Future<void> updateVehicleStatus(String vehicleId, double lat, double lng) async {
     await _vehiclesRef.child(vehicleId).update({
       'location': {'lat': lat, 'lng': lng},
       'lastSeen': ServerValue.timestamp,

@@ -53,9 +53,10 @@ class _WebScreenState extends State<WebScreen> {
           if (_selected != null) {
             final updated = vehicles.where((v) => v.vehicleId == _selected!.vehicleId).firstOrNull;
             if (updated != null && updated != _selected) {
-              WidgetsBinding.instance.addPostFrameCallback(
-                (_) => setState(() => _selected = updated),
-              );
+              // WidgetsBinding.instance.addPostFrameCallback(
+              //   (_) => setState(() => _selected = updated),
+              // );
+              _selected = updated;
             }
           }
 

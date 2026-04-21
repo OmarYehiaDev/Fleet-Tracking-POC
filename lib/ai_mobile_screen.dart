@@ -103,10 +103,10 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
     await _service!.registerPresence(name);
 
     // 4. Start location stream
-    _locationSub = _service!.startLocationStream(name);
+    // _locationSub = _service!.startLocationStream(name);
 
     // Override listener to also update local map
-    _locationSub?.cancel();
+    // _locationSub?.cancel();
     _locationSub =
         Geolocator.getPositionStream(
           locationSettings: const LocationSettings(
@@ -114,13 +114,10 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
             distanceFilter: 10,
           ),
         ).listen((pos) {
-          // Write to RTDB
-          _service!.startLocationStream(name); // handled internally
-          // Update local state for map
-          if (mounted) {
-            setState(() => _position = pos);
-            _mapCtrl.move(LatLng(pos.latitude, pos.longitude), 15.0);
-          }
+          setState(() => _position = pos);
+          _mapCtrl.move(LatLng(pos.latitude, pos.longitude), 15.0);
+          // Write to RTDB directly — no startLocationStream() here
+          _service!.updateVehicleStatus(name, pos.latitude, pos.longitude);
         });
 
     setState(() {
