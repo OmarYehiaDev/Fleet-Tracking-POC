@@ -148,6 +148,11 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       _cameraCtrl = CameraController(back, ResolutionPreset.medium, enableAudio: false);
       await _cameraCtrl!.initialize();
     } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Camera unavailable: $e')));
+      }
       setState(() {
         _isBusy = false;
         _errorMsg = 'Camera unavailable: $e';
@@ -185,6 +190,11 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
         _position!.longitude,
       );
     } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Camera unavailable: $e')));
+      }
       debugPrint('Snapshot error: $e');
     }
   }
