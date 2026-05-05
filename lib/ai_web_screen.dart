@@ -67,6 +67,10 @@ class _WebScreenState extends State<WebScreen> {
                 vehicles: vehicles,
                 selected: _selected,
                 onSelect: _selectVehicle,
+                onDelete: (vehicle) async {
+                  await _service.deleteVehicle(vehicle.vehicleId);
+                  setState(() => _selected = null);
+                },
                 onDeselect: () => setState(() => _selected = null),
               ),
 
@@ -95,12 +99,14 @@ class _Sidebar extends StatelessWidget {
   final List<VehicleModel> vehicles;
   final VehicleModel? selected;
   final ValueChanged<VehicleModel> onSelect;
+  final ValueChanged<VehicleModel> onDelete;
   final VoidCallback onDeselect;
 
   const _Sidebar({
     required this.vehicles,
     required this.selected,
     required this.onSelect,
+    required this.onDelete,
     required this.onDeselect,
   });
 
@@ -203,6 +209,7 @@ class _Sidebar extends StatelessWidget {
                       vehicle: vehicles[i],
                       isSelected: selected?.vehicleId == vehicles[i].vehicleId,
                       onTap: () => onSelect(vehicles[i]),
+                      onDelete: () => onDelete(vehicles[i]),
                     ),
                   ),
           ),
@@ -223,8 +230,14 @@ class _VehicleCard extends StatelessWidget {
   final VehicleModel vehicle;
   final bool isSelected;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
-  const _VehicleCard({required this.vehicle, required this.isSelected, required this.onTap});
+  const _VehicleCard({
+    required this.vehicle,
+    required this.isSelected,
+    required this.onTap,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -309,7 +322,46 @@ class _VehicleCard extends StatelessWidget {
               ),
 
             const SizedBox(width: 8),
-            const Icon(Icons.chevron_right, color: AppTheme.textSecondary, size: 16),
+            IconButton(
+              icon: Icon(Icons.delete_forever, color: AppTheme.red, size: 16),
+              onPressed: () async {
+                final shouldDelete = await showDialog(
+                  context: context,
+                  builder: (cxt) => AlertDialog(
+                    backgroundColor: AppTheme.panel,
+                    titleTextStyle: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.red,
+                    ),
+                    title: Center(child: const Text('Delete vehicle')),
+                    contentTextStyle: TextStyle(color: AppTheme.textPrimary),
+                    content: Text(
+                      'Are you sure you want to delete ${vehicle.vehicleId}?\nThis action cannot be undone.',
+                      textAlign: TextAlign.center,
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: Navigator.of(cxt).pop,
+                        style: TextButton.styleFrom(foregroundColor: AppTheme.textSecondary),
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.red,
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () {
+                          Navigator.of(cxt).pop(true);
+                        },
+                        child: const Text('Delete'),
+                      ),
+                    ],
+                  ),
+                );
+                if (shouldDelete == true) onDelete();
+              },
+            ),
           ],
         ),
       ),

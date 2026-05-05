@@ -141,11 +141,17 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
     // Init camera (back-facing, headless — no preview needed)
     try {
       final cameras = await availableCameras();
-      final back = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
+      debugPrint('Available cameras: ${cameras.map((c) => c.lensDirection).join(', ')}');
+      final cam = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
-      _cameraCtrl = CameraController(back, ResolutionPreset.medium, enableAudio: false);
+      _cameraCtrl = CameraController(
+        cam,
+        ResolutionPreset.low,
+        enableAudio: false,
+        // imageFormatGroup: ImageFormatGroup.jpeg,
+      );
       await _cameraCtrl!.initialize();
     } catch (e) {
       if (mounted) {
@@ -153,6 +159,7 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
           context,
         ).showSnackBar(SnackBar(content: Text('Camera unavailable: $e')));
       }
+      debugPrint('Camera unavailable: $e');
       setState(() {
         _isBusy = false;
         _errorMsg = 'Camera unavailable: $e';
@@ -180,6 +187,10 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
   }
 
   Future<void> _captureAndPush(String name) async {
+    if (_isBusy) return; // Skip if still processing
+    if (!_cameraCtrl!.value.isInitialized) return;
+
+    _isBusy = true;
     if (_position == null || _cameraCtrl == null) return;
     try {
       final xFile = await _cameraCtrl!.takePicture();
@@ -191,11 +202,38 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Camera unavailable: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Snapshot error: $e')));
+        await _reinitializeCamera();
       }
       debugPrint('Snapshot error: $e');
+    } finally {
+      _isBusy = false;
+    }
+  }
+
+  Future<void> _reinitializeCamera() async {
+    try {
+      await _cameraCtrl!.dispose();
+      await Future.delayed(const Duration(milliseconds: 500));
+      final cameras = await availableCameras();
+      final cam = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+      _cameraCtrl = CameraController(
+        cam,
+        ResolutionPreset.low, // Lower resolution = more stable on weak hardware
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+
+      await _cameraCtrl!.initialize();
+      setState(() {});
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Re-init failed: $e')));
+      }
+      debugPrint('Re-init failed: $e');
     }
   }
 

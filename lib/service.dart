@@ -135,4 +135,16 @@ class FleetManagementService {
         .toList()
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
   }
+
+  ///* DELETE A VEHICLE
+  ///
+  /// Deletes the vehicle with the specified `vehicleId` from the RTDB and all its snapshots.
+  Future<void> deleteVehicle(String vehicleId) async {
+    await _vehiclesRef.child(vehicleId).remove();
+    final storageRef = _storage.ref('fleet/$vehicleId/photos');
+    final listResult = await storageRef.listAll();
+    for (final item in listResult.items) {
+      await item.delete();
+    }
+  }
 }

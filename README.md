@@ -298,6 +298,33 @@ firebase deploy --only hosting
 
 ---
 
+## Killing the DVR service
+
+```powershell
+adb shell appops set com.zqc.camera android:camera deny | adb shell am force-stop com.zqc.camera | adb shell kill -9 1978 | adb reboot | adb wait-for-device
+```
+
+---
+
+## Re-enabling it again
+
+- You need to factory reset it or do the following cmd:
+
+```powershell
+adb shell pm enable com.zqc.camera
+adb shell appops set com.zqc.camera android:camera allow
+```
+
+---
+
+## Checking the status of cameras
+
+```powershell
+adb shell dumpsys media.camera > active_cams.txt | notepad active_cams.txt
+```
+
+---
+
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE) for details.
