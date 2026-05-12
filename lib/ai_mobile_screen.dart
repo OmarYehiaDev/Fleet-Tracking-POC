@@ -11,6 +11,8 @@ import 'app_version.dart';
 import 'service.dart';
 import 'theme.dart';
 
+final _direction = CameraLensDirection.back;
+
 // ─────────────────────────────────────────────────────────────
 // State machine
 // ─────────────────────────────────────────────────────────────
@@ -143,8 +145,20 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       final cameras = await availableCameras();
       debugPrint('Available cameras: ${cameras.map((c) => c.lensDirection).join(', ')}');
       final cam = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
+        (c) => c.lensDirection == _direction,
+        orElse: () {
+          final camList = cameras;
+          debugPrint(
+            'Available cameras (OrElse): ${camList.map((c) => c.lensDirection).join(', ')}',
+          );
+          camList.removeWhere((c) => c.lensDirection == _direction);
+          if (camList.isEmpty) {
+            throw 'No cameras found';
+          } else {
+            debugPrint('Back camera not found, using ${camList.first.lensDirection} instead');
+            return camList.first;
+          }
+        },
       );
       _cameraCtrl = CameraController(
         cam,
@@ -217,14 +231,26 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       await Future.delayed(const Duration(milliseconds: 500));
       final cameras = await availableCameras();
       final cam = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
+        (c) => c.lensDirection == _direction,
+        orElse: () {
+          final camList = cameras;
+          debugPrint(
+            'Available cameras (OrElse): ${camList.map((c) => c.lensDirection).join(', ')}',
+          );
+          camList.removeWhere((c) => c.lensDirection == _direction);
+          if (camList.isEmpty) {
+            throw 'No cameras found';
+          } else {
+            debugPrint('Back camera not found, using ${camList.first.lensDirection} instead');
+            return camList.first;
+          }
+        },
       );
       _cameraCtrl = CameraController(
         cam,
         ResolutionPreset.low, // Lower resolution = more stable on weak hardware
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
+        // imageFormatGroup: ImageFormatGroup.jpeg,
       );
 
       await _cameraCtrl!.initialize();
