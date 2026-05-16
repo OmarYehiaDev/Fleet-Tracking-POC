@@ -134,58 +134,55 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
     });
   }
 
-  Future<void> _startRecording() async {
+  Future<void> _startRecording({bool skipCamera = false}) async {
     setState(() {
       _isBusy = true;
       _errorMsg = null;
     });
 
     // Init camera (back-facing, headless — no preview needed)
-    try {
-      final cameras = await availableCameras();
-      debugPrint('Available cameras: ${cameras.map((c) => c.lensDirection).join(', ')}');
-      final cam = cameras.firstWhere(
-        (c) => c.lensDirection == _direction,
-        orElse: () {
-          final camList = cameras;
-          debugPrint(
-            'Available cameras (OrElse): ${camList.map((c) => c.lensDirection).join(', ')}',
-          );
-          camList.removeWhere((c) => c.lensDirection == _direction);
-          if (camList.isEmpty) {
-            throw 'No cameras found';
-          } else {
-            debugPrint('Back camera not found, using ${camList.first.lensDirection} instead');
-            return camList.first;
-          }
-        },
-      );
-      _cameraCtrl = CameraController(
-        cam,
-        ResolutionPreset.low,
-        enableAudio: false,
-        // imageFormatGroup: ImageFormatGroup.jpeg,
-      );
-      await _cameraCtrl!.initialize();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Camera unavailable: $e')));
+    if (!skipCamera) {
+      try {
+        final cameras = await availableCameras();
+        debugPrint('Available cameras: ${cameras.map((c) => c.lensDirection).join(', ')}');
+        final cam = cameras.firstWhere(
+          (c) => c.lensDirection == _direction,
+          orElse: () {
+            final camList = cameras;
+            debugPrint(
+              'Available cameras (OrElse): ${camList.map((c) => c.lensDirection).join(', ')}',
+            );
+            camList.removeWhere((c) => c.lensDirection == _direction);
+            if (camList.isEmpty) {
+              throw 'No cameras found';
+            } else {
+              debugPrint('Back camera not found, using ${camList.first.lensDirection} instead');
+              return camList.first;
+            }
+          },
+        );
+        _cameraCtrl = CameraController(cam, ResolutionPreset.low, enableAudio: false);
+        await _cameraCtrl!.initialize();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Camera unavailable: $e')));
+        }
+        debugPrint('Camera unavailable: $e');
+        setState(() {
+          _isBusy = false;
+          _errorMsg = 'Camera unavailable: $e';
+        });
+        return;
       }
-      debugPrint('Camera unavailable: $e');
-      setState(() {
-        _isBusy = false;
-        _errorMsg = 'Camera unavailable: $e';
-      });
-      return;
     }
 
     // Capture immediately, then every 15 s
-    await _captureAndPush(_nameCtrl.text);
+    await _captureAndPush(_nameCtrl.text, skipCamera: skipCamera);
     _countdown = 15;
     _captureTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
-      await _captureAndPush(_nameCtrl.text);
+      await _captureAndPush(_nameCtrl.text, skipCamera: skipCamera);
       setState(() => _countdown = 15);
     });
 
@@ -200,8 +197,15 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
     });
   }
 
-  Future<void> _captureAndPush(String name) async {
+  Future<void> _captureAndPush(String name, {bool skipCamera = false}) async {
     if (_isBusy) return; // Skip if still processing
+    if (skipCamera) {
+      // If camera is unavailable, just push location without snapshot
+      if (_position != null) {
+        await _service!.updateVehicleStatus(name, _position!.latitude, _position!.longitude);
+      }
+      return;
+    }
     if (!_cameraCtrl!.value.isInitialized) return;
 
     _isBusy = true;
@@ -628,48 +632,132 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                   ),
 
                 // Record / Stop button
-                SizedBox(
-                  width: double.infinity,
-                  height: 50,
-                  child: ElevatedButton(
-                    onPressed: _isBusy ? null : (isRecording ? _stopRecording : _startRecording),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isRecording ? AppTheme.red : AppTheme.amber,
-                      foregroundColor: isRecording ? Colors.white : AppTheme.bg,
-                      disabledBackgroundColor: (isRecording ? AppTheme.red : AppTheme.amber)
-                          .withValues(alpha: 0.4),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      elevation: 0,
-                    ),
-                    child: _isBusy
-                        ? SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: isRecording ? Colors.white : AppTheme.bg,
-                            ),
-                          )
-                        : Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
-                                size: 18,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                isRecording ? 'STOP RECORDING' : 'START RECORDING',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w800,
-                                  letterSpacing: 2,
+                if (isRecording)
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _isBusy ? null : _stopRecording,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.red,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: AppTheme.red.withValues(alpha: 0.4),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        elevation: 0,
+                      ),
+                      child: _isBusy
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.stop_rounded, size: 18),
+                                SizedBox(width: 8),
+                                Text(
+                                  'STOP RECORDING',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 2,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
+                    ),
+                  )
+                else
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 50,
+                          child: ElevatedButton(
+                            onPressed: _isBusy ? null : () => _startRecording(skipCamera: true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.amber,
+                              foregroundColor: AppTheme.bg,
+                              disabledBackgroundColor: AppTheme.amber.withValues(alpha: 0.4),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              elevation: 0,
+                            ),
+                            child: _isBusy
+                                ? SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: AppTheme.bg,
+                                    ),
+                                  )
+                                : const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.location_on_rounded, size: 18),
+                                      SizedBox(width: 6),
+                                      Flexible(
+                                        child: Text(
+                                          'START LOCATION TRACKING',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w800,
+                                            letterSpacing: 1,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                           ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 50,
+                          child: ElevatedButton(
+                            onPressed: _isBusy ? null : () => _startRecording(),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.amber,
+                              foregroundColor: AppTheme.bg,
+                              disabledBackgroundColor: AppTheme.amber.withValues(alpha: 0.4),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              elevation: 0,
+                            ),
+                            child: _isBusy
+                                ? SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: AppTheme.bg,
+                                    ),
+                                  )
+                                : const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.fiber_manual_record, size: 18),
+                                      SizedBox(width: 6),
+                                      Flexible(
+                                        child: Text(
+                                          'START TRIP STREAMING',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w800,
+                                            letterSpacing: 1,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
                 Padding(
                   padding: const EdgeInsets.only(top: 16.0),
                   child: Text(
