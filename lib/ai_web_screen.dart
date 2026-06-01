@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'ai_snapshots_screen.dart';
+import 'ai_videos_screen.dart';
 import 'app_version.dart';
 import 'service.dart';
 import 'theme.dart';
@@ -593,6 +594,19 @@ class _DetailPanel extends StatelessWidget {
                   label: 'SNAPSHOTS',
                   value: '${vehicle.snapshots.length} captured',
                 ),
+                const SizedBox(height: 8),
+                StreamBuilder<List<VideoModel>>(
+                  stream: FleetManagementService.instance.streamVehicleVideos(vehicle.vehicleId),
+                  builder: (context, snapshot) {
+                    final count = snapshot.data?.length ?? 0;
+                    return _MetaRow(
+                      icon: Icons.videocam_outlined,
+                      iconColor: AppTheme.textSecondary,
+                      label: 'VIDEOS',
+                      value: '$count uploaded',
+                    );
+                  },
+                ),
                 if (snap != null) ...[
                   const SizedBox(height: 8),
                   _MetaRow(
@@ -630,6 +644,41 @@ class _DetailPanel extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+          // Videos Button
+          StreamBuilder<List<VideoModel>>(
+            stream: FleetManagementService.instance.streamVehicleVideos(vehicle.vehicleId),
+            builder: (context, snapshot) {
+              final count = snapshot.data?.length ?? 0;
+              return SizedBox(
+                width: double.infinity,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.panel,
+                      foregroundColor: AppTheme.textPrimary,
+                      side: const BorderSide(color: AppTheme.panelBorder),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadiusGeometry.circular(15),
+                      ),
+                    ),
+                    icon: const Icon(Icons.videocam_outlined, size: 14),
+                    onPressed: count == 0
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(builder: (_) => VideosScreen(vehicle: vehicle)),
+                            );
+                          },
+                    label: Text(
+                      count == 0 ? 'NO VIDEOS' : 'VIEW $count VIDEO${count == 1 ? '' : 'S'}',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),

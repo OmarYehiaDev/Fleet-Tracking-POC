@@ -104,3 +104,28 @@ class VehicleModel {
   int get hashCode =>
       Object.hash(vehicleId, status, lastSeen, currentLatitude, currentLongitude, snapshots.length);
 }
+
+class VideoModel {
+  final String databaseId;
+  final String url;
+  final String filename;
+  final DateTime timestamp;
+
+  VideoModel({
+    required this.databaseId,
+    required this.url,
+    required this.filename,
+    required this.timestamp,
+  });
+
+  static VideoModel fromDB(String id, Map<String, dynamic> data) {
+    return VideoModel(
+      databaseId: id,
+      url: data['url'] as String? ?? '',
+      filename: data['filename'] as String? ?? '',
+      timestamp: DateTime.fromMillisecondsSinceEpoch(
+        int.tryParse(data['timestamp']?.toString() ?? '') ?? -1,
+      ),
+    );
+  }
+}

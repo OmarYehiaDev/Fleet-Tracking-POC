@@ -76,6 +76,48 @@ class FleetManagementService {
     });
   }
 
+  ///* SEND A DEVICE VIDEO
+  ///
+  /// Uploads a single video [file] to Firebase Storage under
+  /// `device-videos/{vehicleId}/{filename}` and writes an entry
+  /// under `fleet/vehicles/{vehicleId}/videos` in the Realtime
+  /// Database with the download URL and server timestamp.
+  ///
+  /// Throws if the upload or database write fails so the caller
+  /// can count successes/failures independently per file.
+  Future<void> pushVideo(String vehicleId, File videoFile) async {
+    final filename = videoFile.path.split('/').last;
+    final storageRef = _storage.ref('device-videos/$vehicleId/$filename');
+
+    // Upload the video file
+    final uploadTask = await storageRef.putFile(
+      videoFile,
+      SettableMetadata(contentType: _contentTypeForFile(filename)),
+    );
+    final videoUrl = await uploadTask.ref.getDownloadURL();
+
+    // Record the entry in RTDB under the vehicle node
+    await _vehiclesRef.child('$vehicleId/videos').push().set({
+      'url': videoUrl,
+      'filename': filename,
+      'timestamp': ServerValue.timestamp,
+    });
+  }
+
+  /// Returns a best-guess MIME type for common video extensions.
+  String _contentTypeForFile(String filename) {
+    final ext = filename.split('.').last.toLowerCase();
+    const types = {
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'avi': 'video/x-msvideo',
+      'mkv': 'video/x-matroska',
+      '3gp': 'video/3gpp',
+      'webm': 'video/webm',
+    };
+    return types[ext] ?? 'video/mp4';
+  }
+
   // ───────────────────────────────────────────────────────────── //
   //                      MONITORING SECTION                       //
   // ───────────────────────────────────────────────────────────── //
@@ -136,15 +178,43 @@ class FleetManagementService {
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
   }
 
+  ///* SHOW SPECIFIC VEHICLE'S VIDEOS
+  ///
+  /// This function gets the videos of the vehicle with the specified
+  /// `vehicleId` from the RTDB, sorted by newest first.
+  Stream<List<VideoModel>> streamVehicleVideos(String vehicleId) {
+    return _vehiclesRef.child('$vehicleId/videos').onValue.map((event) {
+      final data = event.snapshot.value as Map<dynamic, dynamic>? ?? {};
+      return data.entries
+          .map((e) => VideoModel.fromDB(e.key as String, Map<String, dynamic>.from(e.value)))
+          .toList()
+        ..sort((a, b) => b.timestamp.compareTo(a.timestamp)); // newest first
+    });
+  }
+
   ///* DELETE A VEHICLE
   ///
   /// Deletes the vehicle with the specified `vehicleId` from the RTDB and all its snapshots.
   Future<void> deleteVehicle(String vehicleId) async {
+    // Delete snapshots from Storage
+    try {
+      final photosRef = _storage.ref('fleet/$vehicleId/photos');
+      final photoList = await photosRef.listAll();
+      for (final item in photoList.items) {
+        await item.delete();
+      }
+    } catch (_) {}
+
+    // Delete videos from Storage
+    try {
+      final videosRef = _storage.ref('device-videos/$vehicleId');
+      final videoList = await videosRef.listAll();
+      for (final item in videoList.items) {
+        await item.delete();
+      }
+    } catch (_) {}
+
+    // Delete the entire vehicle node from RTDB (includes snapshots + videos metadata)
     await _vehiclesRef.child(vehicleId).remove();
-    final storageRef = _storage.ref('fleet/$vehicleId/photos');
-    final listResult = await storageRef.listAll();
-    for (final item in listResult.items) {
-      await item.delete();
-    }
   }
 }

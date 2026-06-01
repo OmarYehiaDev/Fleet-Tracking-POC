@@ -6,8 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_version.dart';
+import 'file_utils.dart';
 import 'service.dart';
 import 'theme.dart';
 
@@ -17,6 +21,12 @@ final _direction = CameraLensDirection.back;
 // State machine
 // ─────────────────────────────────────────────────────────────
 enum _DriveState { idle, online, recording }
+
+// ─────────────────────────────────────────────────────────────
+// SharedPreferences keys
+// ─────────────────────────────────────────────────────────────
+const _kVideoFolder = 'video_folder_path';
+const _kVideoCount = 'video_send_count';
 
 class MobileScreen extends StatefulWidget {
   const MobileScreen({super.key});
@@ -47,6 +57,11 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
   Timer? _captureTimer; // fires every 15 s → capture + push
   Timer? _countdownTimer; // fires every 1 s  → decrement display
   int _countdown = 15;
+
+  // ── video upload state ───────────────────────────────────────
+  bool _isUploadingVideos = false;
+  int _videoUploadProgress = 0;
+  int _videoUploadTotal = 0;
 
   // ── pulse animation for REC badge ────────────────────────────
   late final AnimationController _pulseCtrl = AnimationController(
@@ -104,11 +119,7 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
     _service = FleetManagementService.instance;
     await _service!.registerPresence(name);
 
-    // 4. Start location stream
-    // _locationSub = _service!.startLocationStream(name);
-
-    // Override listener to also update local map
-    // _locationSub?.cancel();
+    // 4. Override listener to also update local map
     _locationSub =
         Geolocator.getPositionStream(
           locationSettings: const LocationSettings(
@@ -118,7 +129,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
         ).listen((pos) {
           setState(() => _position = pos);
           _mapCtrl.move(LatLng(pos.latitude, pos.longitude), 15.0);
-          // Write to RTDB directly — no startLocationStream() here
           _service!.updateVehicleStatus(name, pos.latitude, pos.longitude);
         });
 
@@ -128,7 +138,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       _isBusy = false;
     });
 
-    // Center map on initial position
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _mapCtrl.move(LatLng(position.latitude, position.longitude), 15.0);
     });
@@ -140,7 +149,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       _errorMsg = null;
     });
 
-    // Init camera (back-facing, headless — no preview needed)
     if (!skipCamera) {
       try {
         final cameras = await availableCameras();
@@ -178,7 +186,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       }
     }
 
-    // Capture immediately, then every 15 s
     await _captureAndPush(_nameCtrl.text, skipCamera: skipCamera);
     _countdown = 15;
     _captureTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
@@ -186,7 +193,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       setState(() => _countdown = 15);
     });
 
-    // 1-second display countdown
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _countdown = (_countdown - 1).clamp(0, 15));
     });
@@ -198,9 +204,8 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
   }
 
   Future<void> _captureAndPush(String name, {bool skipCamera = false}) async {
-    if (_isBusy) return; // Skip if still processing
+    if (_isBusy) return;
     if (skipCamera) {
-      // If camera is unavailable, just push location without snapshot
       if (_position != null) {
         await _service!.updateVehicleStatus(name, _position!.latitude, _position!.longitude);
       }
@@ -250,13 +255,7 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
           }
         },
       );
-      _cameraCtrl = CameraController(
-        cam,
-        ResolutionPreset.low, // Lower resolution = more stable on weak hardware
-        enableAudio: false,
-        // imageFormatGroup: ImageFormatGroup.jpeg,
-      );
-
+      _cameraCtrl = CameraController(cam, ResolutionPreset.low, enableAudio: false);
       await _cameraCtrl!.initialize();
       setState(() {});
     } catch (e) {
@@ -298,6 +297,352 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
   }
 
   // ─────────────────────────────────────────────────────────────
+  // Send Device Videos
+  // ─────────────────────────────────────────────────────────────
+
+  /// Loads saved folder/count prefs, shows dialog if missing, then uploads.
+  Future<void> _onSendDeviceVideos() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? folder = prefs.getString(_kVideoFolder);
+    int? count = prefs.getInt(_kVideoCount);
+
+    // Request storage permission first
+    if (Platform.isAndroid) {
+      final status = await Permission.manageExternalStorage.request();
+      if (!status.isGranted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Storage permission is required to read videos.')),
+          );
+        }
+        return;
+      }
+    }
+
+    // Always show dialog so user can change settings or re-pick folder.
+    // Pre-populate with saved values if available.
+    final result = await _showVideoSettingsDialog(initialFolder: folder, initialCount: count);
+    if (result == null) return; // user cancelled
+
+    folder = result.folder;
+    count = result.count;
+
+    if (result.remember) {
+      await prefs.setString(_kVideoFolder, folder);
+      await prefs.setInt(_kVideoCount, count);
+    } else {
+      // Clear any previously saved prefs if user unchecked "remember"
+      await prefs.remove(_kVideoFolder);
+      await prefs.remove(_kVideoCount);
+    }
+
+    await _uploadVideosFromFolder(folder, count);
+  }
+
+  /// Shows a dialog with a folder picker button and a count dropdown (1–15).
+  /// Returns [_VideoSettings] on confirm, null on cancel.
+  Future<_VideoSettings?> _showVideoSettingsDialog({String? initialFolder, int? initialCount}) {
+    String? selectedFolder = initialFolder;
+    int selectedCount = (initialCount ?? 5).clamp(1, 15);
+    bool remember = true;
+
+    return showDialog<_VideoSettings>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppTheme.panel,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              title: const Row(
+                children: [
+                  Icon(Icons.video_collection, color: AppTheme.amber, size: 20),
+                  SizedBox(width: 10),
+                  Text(
+                    'VIDEO UPLOAD SETTINGS',
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: MediaQuery.of(context).size.width * 0.6,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── Folder picker ────────────────────────
+                    const Text(
+                      'VIDEO FOLDER',
+                      style: TextStyle(
+                        color: AppTheme.amber,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.8,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    GestureDetector(
+                      onTap: () async {
+                        // FilePicker v11+ uses static methods (no .platform)
+                        final picked = await FilePicker.getDirectoryPath(
+                          dialogTitle: 'Select video folder',
+                        );
+                        if (picked != null) {
+                          setDialogState(() => selectedFolder = picked);
+                        }
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.bg,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: selectedFolder != null
+                                ? AppTheme.amber.withValues(alpha: 0.6)
+                                : Colors.transparent,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              selectedFolder != null ? Icons.folder : Icons.folder_open_outlined,
+                              color: AppTheme.amber,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                selectedFolder ?? 'Tap to pick a folder…',
+                                style: TextStyle(
+                                  color: selectedFolder != null
+                                      ? AppTheme.textPrimary
+                                      : AppTheme.textSecondary.withValues(alpha: 0.5),
+                                  fontSize: 12,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                maxLines: 2,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const Icon(
+                              Icons.chevron_right,
+                              color: AppTheme.textSecondary,
+                              size: 16,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ── Video count dropdown ─────────────────
+                    const Text(
+                      'NUMBER OF VIDEOS',
+                      style: TextStyle(
+                        color: AppTheme.amber,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.8,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.bg,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<int>(
+                          value: selectedCount,
+                          dropdownColor: AppTheme.panel,
+                          iconEnabledColor: AppTheme.amber,
+                          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
+                          items: List.generate(15, (i) => i + 1).map((n) {
+                            return DropdownMenuItem(
+                              value: n,
+                              child: Text(
+                                n == 1 ? '1 video' : '$n videos',
+                                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) setDialogState(() => selectedCount = val);
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ── Remember toggle ──────────────────────
+                    GestureDetector(
+                      onTap: () => setDialogState(() => remember = !remember),
+                      child: Row(
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            width: 18,
+                            height: 18,
+                            decoration: BoxDecoration(
+                              color: remember ? AppTheme.amber : Colors.transparent,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: remember ? AppTheme.amber : AppTheme.textSecondary,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: remember
+                                ? const Icon(Icons.check, size: 12, color: AppTheme.bg)
+                                : null,
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'Remember these settings',
+                            style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(null),
+                  child: const Text(
+                    'CANCEL',
+                    style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 12,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: selectedFolder == null
+                      ? null // keep SEND disabled until a folder is chosen
+                      : () {
+                          Navigator.of(ctx).pop(
+                            _VideoSettings(
+                              folder: selectedFolder!,
+                              count: selectedCount,
+                              remember: remember,
+                            ),
+                          );
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.amber,
+                    foregroundColor: AppTheme.bg,
+                    disabledBackgroundColor: AppTheme.amber.withValues(alpha: 0.35),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  ),
+                  child: const Text(
+                    'SEND',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 1.5),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Scans [folderPath] for video files, validates counts, then uploads.
+  Future<void> _uploadVideosFromFolder(String folderPath, int requestedCount) async {
+    final vehicleId = _nameCtrl.text.trim();
+
+    // ── Resolve content URI → real paths ────────────────────
+    List<String> resolvedPaths;
+    try {
+      resolvedPaths = await FileUtils.getFilesFromUri(folderPath);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not read folder: $e')));
+      }
+      return;
+    }
+
+    final allVideoFiles = resolvedPaths.map((p) => File(p)).toList()
+      ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync())); // newest → oldest
+
+    // ── Guard: no videos found ───────────────────────────────
+    if (allVideoFiles.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No video files found in the selected folder.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      return;
+    }
+
+    // ── Warn if fewer files than requested ───────────────────
+    final available = allVideoFiles.length;
+    final count = requestedCount.clamp(1, available);
+
+    if (available < requestedCount && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Only $available video${available == 1 ? '' : 's'} found '
+            '(you requested $requestedCount). Uploading all $available.',
+          ),
+          backgroundColor: AppTheme.amber,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      await Future.delayed(const Duration(milliseconds: 600));
+    }
+
+    final videoFiles = allVideoFiles.take(count).toList();
+
+    setState(() {
+      _isUploadingVideos = true;
+      _videoUploadProgress = 0;
+      _videoUploadTotal = videoFiles.length;
+    });
+
+    int successCount = 0;
+    for (final file in videoFiles) {
+      try {
+        await _service!.pushVideo(vehicleId, file);
+        successCount++;
+      } catch (e) {
+        debugPrint('Video upload error for ${file.path}: $e');
+      } finally {
+        if (mounted) setState(() => _videoUploadProgress++);
+      }
+    }
+
+    setState(() => _isUploadingVideos = false);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$successCount of ${videoFiles.length} video(s) uploaded successfully.'),
+          backgroundColor: successCount == videoFiles.length ? AppTheme.green : AppTheme.amber,
+        ),
+      );
+    }
+  }
+  // ─────────────────────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────────────────────
 
@@ -321,7 +666,7 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SizedBox(height: 64),
+            const SizedBox(height: 32),
 
             // Logo / header
             Row(
@@ -386,7 +731,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
               controller: _nameCtrl,
               style: const TextStyle(
                 color: AppTheme.textPrimary,
-
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
               ),
@@ -394,7 +738,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                 hintText: 'e.g. TRUCK-01',
                 hintStyle: TextStyle(
                   color: AppTheme.textSecondary.withValues(alpha: 0.5),
-
                   fontSize: 18,
                 ),
                 filled: true,
@@ -450,7 +793,7 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
               ),
             ),
 
-            const SizedBox(height: 48),
+            const SizedBox(height: 32),
           ],
         ),
       ),
@@ -525,7 +868,6 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                         _nameCtrl.text,
                         style: const TextStyle(
                           color: AppTheme.textPrimary,
-
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
                         ),
@@ -593,6 +935,57 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                         ),
                       ],
                     ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+        // ── Video upload progress overlay ─────────────────────
+        if (_isUploadingVideos)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black.withValues(alpha: 0.55),
+              child: Center(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 40),
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: AppTheme.panel,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.cloud_upload_outlined, color: AppTheme.amber, size: 36),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Uploading Videos',
+                        style: const TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '$_videoUploadProgress / $_videoUploadTotal',
+                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                      ),
+                      const SizedBox(height: 16),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: _videoUploadTotal > 0
+                              ? _videoUploadProgress / _videoUploadTotal
+                              : 0,
+                          backgroundColor: AppTheme.bg,
+                          color: AppTheme.amber,
+                          minHeight: 6,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -671,11 +1064,14 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                 else
                   Row(
                     children: [
+                      // ── START LOCATION TRACKING ──────────
                       Expanded(
                         child: SizedBox(
                           height: 50,
                           child: ElevatedButton(
-                            onPressed: _isBusy ? null : () => _startRecording(skipCamera: true),
+                            onPressed: _isBusy || _isUploadingVideos
+                                ? null
+                                : () => _startRecording(skipCamera: true),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: AppTheme.amber,
                               foregroundColor: AppTheme.bg,
@@ -714,11 +1110,15 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                         ),
                       ),
                       const SizedBox(width: 8),
+
+                      // ── START TRIP STREAMING ─────────────
                       Expanded(
                         child: SizedBox(
                           height: 50,
                           child: ElevatedButton(
-                            onPressed: _isBusy ? null : () => _startRecording(),
+                            onPressed: _isBusy || _isUploadingVideos
+                                ? null
+                                : () => _startRecording(),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: AppTheme.amber,
                               foregroundColor: AppTheme.bg,
@@ -756,6 +1156,51 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
                           ),
                         ),
                       ),
+                      const SizedBox(width: 8),
+
+                      // ── SEND DEVICE VIDEOS ───────────────
+                      Expanded(
+                        child: SizedBox(
+                          height: 50,
+                          child: ElevatedButton(
+                            onPressed: _isBusy || _isUploadingVideos ? null : _onSendDeviceVideos,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.amber,
+                              foregroundColor: AppTheme.bg,
+                              disabledBackgroundColor: AppTheme.amber.withValues(alpha: 0.4),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              elevation: 0,
+                            ),
+                            child: _isUploadingVideos
+                                ? SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: AppTheme.bg,
+                                    ),
+                                  )
+                                : const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.video_collection, size: 18),
+                                      SizedBox(width: 6),
+                                      Flexible(
+                                        child: Text(
+                                          'SEND DEVICE VIDEOS',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w800,
+                                            letterSpacing: 1,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 Padding(
@@ -776,6 +1221,17 @@ class _MobileScreenState extends State<MobileScreen> with TickerProviderStateMix
       ],
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Video settings result object
+// ─────────────────────────────────────────────────────────────
+
+class _VideoSettings {
+  final String folder;
+  final int count;
+  final bool remember;
+  const _VideoSettings({required this.folder, required this.count, required this.remember});
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -800,6 +1256,7 @@ class _VehicleMarker extends StatelessWidget {
           ),
           child: Text(
             label,
+            textAlign: TextAlign.center,
             style: TextStyle(
               color: isRecording ? Colors.white : AppTheme.bg,
               fontSize: 9,
@@ -808,7 +1265,7 @@ class _VehicleMarker extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 2),
-        Icon(Icons.location_pin, color: isRecording ? AppTheme.red : AppTheme.amber, size: 28),
+        Icon(Icons.location_pin, color: isRecording ? AppTheme.red : AppTheme.amber, size: 24),
       ],
     );
   }
